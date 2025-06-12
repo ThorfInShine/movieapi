@@ -22,7 +22,7 @@ movie_id_to_index = None
 
 def load_or_generate_similarity_matrix():
     """Load similarity matrix jika ada, atau generate jika tidak ada"""
-    # Di Vercel, simpan di /tmp directory
+    # Di Azure, simpan di /tmp directory
     matrix_path = "/tmp/cosine_similarity_matrix.npy"
     
     if os.path.exists(matrix_path):
@@ -77,7 +77,7 @@ def load_base_data():
         
         movie_id_to_index = {v: int(k) for k, v in index_to_movie_id.items()}
         
-        logger.info("Base data loaded successfully")
+        logger.info(f"Base data loaded successfully - {len(movies_df)} movies")
         
     except Exception as e:
         logger.error(f"Error loading base data: {e}")
@@ -88,6 +88,7 @@ def initialize_models():
     global cosine_sim_matrix
     
     try:
+        logger.info("Initializing models...")
         load_base_data()
         cosine_sim_matrix = load_or_generate_similarity_matrix()
         
@@ -103,7 +104,7 @@ def get_user_vector(genres: list[str], favorites: list[str]) -> np.ndarray:
     """Convert user input to TF-IDF vector."""
     try:
         if tfidf_vectorizer is None:
-            raise ValueError("TF-IDF vectorizer not loaded")
+            raise ValueError("TF-IDF vectorizer not loaded. Call initialize_models() first.")
             
         text = " ".join(genres + favorites).lower()
         return tfidf_vectorizer.transform([text]).toarray()
@@ -115,7 +116,7 @@ def get_recommendations(user_vector: np.ndarray, top_n: int = 5):
     """Compute similarity and return top-N movie info."""
     try:
         if movies_df is None or tfidf_vectorizer is None:
-            raise ValueError("Models not loaded")
+            raise ValueError("Models not loaded. Call initialize_models() first.")
             
         movie_features = movies_df['title'] + " " + movies_df['genres']
         movie_vectors = tfidf_vectorizer.transform(movie_features)
@@ -130,7 +131,6 @@ def get_recommendations(user_vector: np.ndarray, top_n: int = 5):
                 "movieId": int(movie_data["movieId"]),
                 "title": movie_data["title"],
                 "genres": movie_data["genres"],
-                "genres_list": movie_data["genres"].split("|") if "|" in movie_data["genres"] else [movie_data["genres"]],
                 "similarity": float(sims[idx]),
                 "rank": len(recommendations) + 1
             })
@@ -140,3 +140,37 @@ def get_recommendations(user_vector: np.ndarray, top_n: int = 5):
     except Exception as e:
         logger.error(f"Error generating recommendations: {e}")
         raise
+
+# Additional function untuk movie similarity
+def get_movie_recommendations_by_id(movie_id: int, top_n: int = 10):
+    """Get movie recommendations berdasarkan movie ID"""
+    try:
+        if cosine_sim_matrix is None or movie_id_to_index is None or movies_df is None:
+            raise ValueError("Models not loaded")
+        
+        if movie_id not in movie_id_to_index:
+            return {"error": f"Movie ID {movie_id} not found"}
+        
+        movie_idx = movie_id_to_index[movie_id]
+        sim_scores = list(enumerate(cosine_sim_matrix[movie_idx]))
+        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+        sim_scores = sim_scores[1:top_n+1]  # Exclude movie itu sendiri
+        
+        recommended_movies = []
+        for idx, score in sim_scores:
+            movie_info = {
+                'movie_id': int(movies_df.iloc[idx]['movieId']),
+                'title': movies_df.iloc[idx]['title'],
+                'genres': movies_df.iloc[idx]['genres'],
+                'similarity_score': float(score)
+            }
+            recommended_movies.append(movie_info)
+        
+        return {
+            'movie_id': movie_id,
+            'recommendations': recommended_movies
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting movie recommendations: {e}")
+        return {"error": f"Error: {str(e)}"}
