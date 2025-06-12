@@ -14,3 +14,4 @@ def recommend_movies(request: RecommendationRequest):
     user_vec = get_user_vector(request.genres, request.favorites)
     top_movies = get_recommendations(user_vec)
     return {"recommendations": top_movies}
+
