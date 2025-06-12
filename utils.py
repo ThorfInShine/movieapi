@@ -1,4 +1,4 @@
-# utils.py
+# utils.py - Updated for Railway
 import numpy as np
 import pandas as pd
 import json
@@ -20,26 +20,42 @@ movies_df = None
 index_to_movie_id = None
 movie_id_to_index = None
 
+def get_temp_dir():
+    """Get appropriate temp directory for Railway"""
+    # Railway biasanya menggunakan /tmp, tapi fallback ke current dir
+    temp_dirs = ["/tmp", "./temp", "."]
+    for temp_dir in temp_dirs:
+        try:
+            if os.path.exists(temp_dir) and os.access(temp_dir, os.W_OK):
+                return temp_dir
+        except:
+            continue
+    return "."
+
 def load_or_generate_similarity_matrix():
     """Load similarity matrix jika ada, atau generate jika tidak ada"""
-    # Di Azure, simpan di /tmp directory
-    matrix_path = "/tmp/cosine_similarity_matrix.npy"
+    temp_dir = get_temp_dir()
+    matrix_path = os.path.join(temp_dir, "cosine_similarity_matrix.npy")
     
     if os.path.exists(matrix_path):
-        logger.info("Loading existing similarity matrix from /tmp...")
-        return np.load(matrix_path)
-    else:
-        logger.info("Generating new similarity matrix...")
-        similarity_matrix = generate_similarity_matrix()
-        
-        # Save ke /tmp untuk next request
         try:
-            logger.info("Saving similarity matrix to /tmp...")
-            np.save(matrix_path, similarity_matrix)
+            logger.info(f"Loading existing similarity matrix from {matrix_path}...")
+            return np.load(matrix_path)
         except Exception as e:
-            logger.warning(f"Could not save similarity matrix: {e}")
-        
-        return similarity_matrix
+            logger.warning(f"Failed to load existing matrix: {e}")
+    
+    logger.info("Generating new similarity matrix...")
+    similarity_matrix = generate_similarity_matrix()
+    
+    # Save untuk next request
+    try:
+        logger.info(f"Saving similarity matrix to {matrix_path}...")
+        np.save(matrix_path, similarity_matrix)
+        logger.info("Similarity matrix saved successfully")
+    except Exception as e:
+        logger.warning(f"Could not save similarity matrix: {e}")
+    
+    return similarity_matrix
 
 def generate_similarity_matrix():
     """Generate cosine similarity matrix dari data movies"""
@@ -65,14 +81,29 @@ def load_base_data():
     global tfidf_vectorizer, movies_df, index_to_movie_id, movie_id_to_index
     
     try:
+        logger.info(f"Loading models from: {MODELS_DIR}")
+        
+        # Check if models directory exists
+        if not os.path.exists(MODELS_DIR):
+            raise FileNotFoundError(f"Models directory not found: {MODELS_DIR}")
+        
         logger.info("Loading TF-IDF vectorizer...")
-        tfidf_vectorizer = joblib.load(os.path.join(MODELS_DIR, "tfidf_vectorizer.pkl"))
+        vectorizer_path = os.path.join(MODELS_DIR, "tfidf_vectorizer.pkl")
+        if not os.path.exists(vectorizer_path):
+            raise FileNotFoundError(f"TF-IDF vectorizer not found: {vectorizer_path}")
+        tfidf_vectorizer = joblib.load(vectorizer_path)
         
         logger.info("Loading movies data...")
-        movies_df = pd.read_csv(os.path.join(MODELS_DIR, "movies_content.csv"))
+        movies_path = os.path.join(MODELS_DIR, "movies_content.csv")
+        if not os.path.exists(movies_path):
+            raise FileNotFoundError(f"Movies data not found: {movies_path}")
+        movies_df = pd.read_csv(movies_path)
         
         logger.info("Loading movie ID mappings...")
-        with open(os.path.join(MODELS_DIR, "movie_id_mappings.json"), "r") as f:
+        mappings_path = os.path.join(MODELS_DIR, "movie_id_mappings.json")
+        if not os.path.exists(mappings_path):
+            raise FileNotFoundError(f"Movie ID mappings not found: {mappings_path}")
+        with open(mappings_path, "r") as f:
             index_to_movie_id = json.load(f)
         
         movie_id_to_index = {v: int(k) for k, v in index_to_movie_id.items()}
@@ -141,7 +172,6 @@ def get_recommendations(user_vector: np.ndarray, top_n: int = 5):
         logger.error(f"Error generating recommendations: {e}")
         raise
 
-# Additional function untuk movie similarity
 def get_movie_recommendations_by_id(movie_id: int, top_n: int = 10):
     """Get movie recommendations berdasarkan movie ID"""
     try:
