@@ -5,31 +5,31 @@ from pydantic import BaseModel
 from typing import List
 import logging
 import os
-import sys
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Import utils dengan error handling
-try:
-    from utils import initialize_models, get_user_vector, get_recommendations, movies_df
-    logger.info("Utils imported successfully")
-except Exception as e:
-    logger.error(f"Failed to import utils: {e}")
-    # Create dummy functions untuk prevent crash
-    def initialize_models(): pass
-    def get_user_vector(*args): return None
-    def get_recommendations(*args): return []
-    movies_df = None
+from utils import (
+    initialize_models, 
+    get_user_vector, 
+    get_recommendations, 
+    get_movie_recommendations_by_id,
+    movies_df
+)
 
 app = FastAPI(
     title="Movie Recommendation API",
-    description="API untuk rekomendasi film",
-    version="1.0.0"
+    description="API untuk mendapatkan rekomendasi film berdasarkan ML",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
-# CORS
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,100 +43,161 @@ class RecommendationRequest(BaseModel):
     favorites: List[str]
     top_n: int = 5
 
-# Global state
+# Global flag untuk track initialization
 models_initialized = False
 initialization_error = None
 
 @app.on_event("startup")
 async def startup_event():
+    """Load semua data saat aplikasi start"""
     global models_initialized, initialization_error
     try:
-        logger.info("🚀 Starting Movie API...")
-        logger.info(f"Python version: {sys.version}")
-        logger.info(f"Working directory: {os.getcwd()}")
-        logger.info(f"Files in directory: {os.listdir('.')}")
-        
-        # Check if models directory exists
-        if os.path.exists('models'):
-            logger.info(f"Models directory found: {os.listdir('models')}")
-        else:
-            logger.error("Models directory not found!")
-            
+        logger.info("Starting Movie Recommendation API...")
         initialize_models()
         models_initialized = True
-        logger.info("✅ Models initialized successfully!")
-        
+        logger.info("✅ Application started successfully!")
     except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
-        initialization_error = str(e)
+        logger.error(f"❌ Error during startup: {e}")
         models_initialized = False
+        initialization_error = str(e)
 
 @app.get("/")
 async def root():
+    """Root endpoint dengan informasi API"""
     return {
         "message": "🎬 Movie Recommendation API",
         "status": "running" if models_initialized else "error",
         "models_loaded": models_initialized,
-        "error": initialization_error,
-        "python_version": sys.version,
-        "working_dir": os.getcwd(),
+        "total_movies": len(movies_df) if movies_df is not None else 0,
+        "initialization_error": initialization_error,
         "endpoints": {
-            "recommend": "POST /recommend",
-            "health": "GET /health",
-            "test": "GET /test",
-            "docs": "GET /docs"
+            "user_recommendations": "POST /recommend",
+            "movie_recommendations": "GET /movies/{movie_id}/recommendations",
+            "health_check": "GET /health",
+            "api_docs": "GET /docs",
+            "test": "GET /test"
+        },
+        "example_request": {
+            "url": "/recommend",
+            "method": "POST",
+            "body": {
+                "genres": ["Action", "Adventure"],
+                "favorites": ["Spider-Man", "Batman"],
+                "top_n": 5
+            }
         }
     }
 
 @app.post("/recommend")
 async def recommend_movies(request: RecommendationRequest):
+    """Get rekomendasi berdasarkan user preferences"""
     if not models_initialized:
         raise HTTPException(
             status_code=503, 
-            detail=f"Models not ready: {initialization_error}"
+            detail=f"Models are not ready. Error: {initialization_error}"
         )
     
     try:
+        # Validate input
+        if not request.genres and not request.favorites:
+            raise HTTPException(
+                status_code=400, 
+                detail="At least one genre or favorite movie must be provided"
+            )
+        
+        # Limit top_n
+        top_n = min(request.top_n, 50)
+        
         user_vec = get_user_vector(request.genres, request.favorites)
-        recommendations = get_recommendations(user_vec, request.top_n)
+        top_movies = get_recommendations(user_vec, top_n)
         
         return {
             "success": True,
             "user_input": {
                 "genres": request.genres,
                 "favorites": request.favorites,
-                "top_n": request.top_n
+                "requested_count": request.top_n,
+                "returned_count": len(top_movies)
             },
-            "recommendations": recommendations
+            "recommendations": top_movies
         }
     except Exception as e:
-        logger.error(f"Recommendation error: {e}")
+        logger.error(f"Error in recommend_movies: {e}")
+        raise HTTPException(status_code=500, detail=f"Error generating recommendations: {str(e)}")
+
+@app.get("/movies/{movie_id}/recommendations")
+async def get_similar_movies(movie_id: int, top_n: int = 10):
+    """Get rekomendasi berdasarkan movie ID (similar movies)"""
+    if not models_initialized:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Models are not ready. Error: {initialization_error}"
+        )
+    
+    try:
+        top_n = min(top_n, 50)  # Limit maksimal
+        recommendations = get_movie_recommendations_by_id(movie_id, top_n)
+        
+        if "error" in recommendations:
+            raise HTTPException(status_code=404, detail=recommendations["error"])
+        
+        return {
+            "success": True,
+            **recommendations
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_similar_movies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
-async def health():
+async def health_check():
+    """Health check endpoint untuk monitoring"""
     return {
         "status": "healthy" if models_initialized else "unhealthy",
         "models_loaded": models_initialized,
-        "error": initialization_error,
-        "total_movies": len(movies_df) if movies_df else 0
+        "total_movies": len(movies_df) if movies_df is not None else 0,
+        "initialization_error": initialization_error,
+        "timestamp": "2024-01-01T00:00:00Z"  # You can use datetime.now()
     }
 
 @app.get("/test")
-async def test():
+async def test_endpoint():
+    """Test endpoint untuk debugging"""
     try:
+        if not models_initialized:
+            return {
+                "status": "Models not initialized",
+                "error": initialization_error
+            }
+        
+        # Test dengan data sample
+        test_genres = ["Action", "Adventure", "Sci-Fi"]
+        test_favorites = ["Spider-Man", "Iron Man"]
+        
+        user_vec = get_user_vector(test_genres, test_favorites)
+        recommendations = get_recommendations(user_vec, 3)
+        
         return {
-            "test": "success",
-            "models_initialized": models_initialized,
-            "python_version": sys.version,
-            "cwd": os.getcwd(),
-            "files": os.listdir('.'),
-            "models_files": os.listdir('models') if os.path.exists('models') else "No models dir"
+            "test": "✅ SUCCESS",
+            "models_loaded": True,
+            "sample_input": {
+                "genres": test_genres,
+                "favorites": test_favorites
+            },
+            "sample_recommendations": recommendations,
+            "total_movies_loaded": len(movies_df)
         }
     except Exception as e:
-        return {"test": "failed", "error": str(e)}
+        logger.error(f"Test failed: {e}")
+        return {
+            "test": "❌ FAILED",
+            "error": str(e),
+            "models_loaded": models_initialized
+        }
 
-# For App Service
+# For Azure App Service
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
